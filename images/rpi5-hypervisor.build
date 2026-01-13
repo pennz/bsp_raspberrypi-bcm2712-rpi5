@@ -1,6 +1,7 @@
 ################################################################################################
 ##
-## Build file for a QNX operating system
+## Build file for QNX Hypervisor on Raspberry Pi 5
+## This file creates a bootable IFS with hypervisor support for hosting guest VMs
 ##
 ################################################################################################
 
@@ -8,7 +9,7 @@
 [+keeplinked]
 [image=0x80000]
 [virtual=aarch64le,raw -compress] boot = {
-    startup-bcm2712-rpi5 -v -u reg -a -W 5000 
+    startup-bcm2712-rpi5 -v -u reg -a -W 5000 -Q enable,el1-host
     PATH=/proc/boot:/sbin:/bin:/usr/bin:/usr/sbin:/usr/libexec LD_LIBRARY_PATH=/proc/boot:/lib:/usr/lib:/lib/dll:/lib/dll/pci procnto-smp-instr -v
 }
 
@@ -23,13 +24,13 @@
     pipe
 
     display_msg " "
-    ksh -c "echo Welcome to QNX $(uname -r) on $(uname -m) !"
+    ksh -c "echo Welcome to QNX $(uname -r) Hypervisor on $(uname -m) !"
     display_msg " "
 
     slogger2
     dumper
     mqueue
-    random 
+    random
 
 
     ############################################################################################
@@ -90,9 +91,16 @@
 
 
     ############################################################################################
+    ## Hypervisor virtio-blk example devices for QNX guest BSP systems
+    ############################################################################################
+    display_msg "Creating example ram disks for guests to use"
+    devb-ram ram capacity=262144 disk name=qvmdisk
+
+
+    ############################################################################################
     ## Network driver
     ############################################################################################
-    ksh /proc/boot/net_start.sh
+    ksh /proc/boot/net_start_hypervisor.sh
 
 
     ############################################################################################
@@ -148,6 +156,13 @@
 ## Block drivers
 ################################################################################################
 /sbin/devb-sdmmc-bcm2712=devb-sdmmc-bcm2712
+/sbin/devb-ram=devb-ram
+
+################################################################################################
+## Hypervisor virtio-blk example devices for QNX guest BSP systems
+##
+##  - remove if not required by your system
+############################################################################################
 
 ################################################################################################
 ## Block driver support libraries
@@ -197,6 +212,16 @@ fi
 /lib/dll/devs-axge.so=devs-axge.so
 /lib/dll/devs-cdce.so=devs-cdce.so
 /lib/dll/devs-smsc.so=devs-smsc.so
+
+################################################################################################
+## Hypervisor Virtio Networking
+################################################################################################
+
+# a network interface that uses the vdevpeer API from QVM to connect to a virtio-net vdev attached to a guest.
+/lib/dll/mods-vdevpeer-net.so=mods-vdevpeer-net.so
+
+# utility for configuring vdevpeer-net driver
+/sbin/vpctl=vpctl
 
 ################################################################################################
 ## Network driver shared libraries
@@ -458,6 +483,29 @@ idle_insert=1
 
 
 ################################################################################################
+## Hypervisor files
+################################################################################################
+/sbin/qvm=qvm
+[+optional] /bin/qvm-check = qvm-check
+
+################################################################################################
+## Hypervisor Virtual Devices (remove any that are not needed)
+################################################################################################
+/lib/dll/vdev-progress.so=vdev-progress.so
+/lib/dll/vdev-ser8250.so=vdev-ser8250.so
+/lib/dll/vdev-shmem.so=vdev-shmem.so
+/lib/dll/vdev-virtio-blk.so=vdev-virtio-blk.so
+/lib/dll/vdev-virtio-console.so=vdev-virtio-console.so
+/lib/dll/vdev-virtio-net.so=vdev-virtio-net.so
+/lib/dll/vdev-smmu.so=vdev-smmu.so
+/lib/dll/vdev-virtio-entropy.so=vdev-virtio-entropy.so
+
+# AARCH64LE-specific Virtual Devices
+/lib/dll/vdev-pl011.so=vdev-pl011.so
+/lib/dll/vdev-wdt-sp805.so=vdev-wdt-sp805.so
+
+
+################################################################################################
 ## Shared libraries for security
 ################################################################################################
 /lib/libqh.so=libqh.so
@@ -600,7 +648,7 @@ ldqnx-64.so.2=ldqnx-64.so.2
 ## Toybox commands
 ## Note: The toybox package combines many common Linux command line utilities together into
 ##       a single, BSD-licensed executable. The following toybox commands are supported.
-##       Use one of the following commands to access help for a toybox command:
+##       Use one of these commands to access help for a toybox command:
 ##         toybox command_name --help
 ##         command_name --help
 ################################################################################################
@@ -792,9 +840,56 @@ uart2_console.sh = {
 }
 
 ################################################################################################
+## Script for Virtual Network driver (for hypervisor guest support)
+################################################################################################
+[perms=0744] .vdev_net_start.sh = {
+   #!/bin/sh
+  ############################################################################################
+    ## Example Hypervisor Virtio Networking Setup
+    ##  - Additional interfaces can be added as needed with "ifconfig vp<x> create",
+    ##    where <x> is an incrementing integer starting at 2, and then treat just like
+    ##    the example interfaces below
+    ##  - For this example, we provide 2 interfaces, such that one can try multiple
+    ##    guests with networking.
+    ##  - Use the vpctl utility to configure the interface, such that it can connect
+    ##    to the guest virtio-net device. It must match the guest configuration, i.e.:
+    ##      - peer=/dev/qvm/<guest "system" name>/<virtio-net "name">
+    ##      - bind=<path given to virtio-net "peer" argument>
+  ############################################################################################
+  waitfor /dev/io-sock/mods-vdevpeer-net.so
+
+  ## For use with a guest with system name "qnx-guest-1"
+  ifconfig vp0 create up
+  vpctl vp0 peer=/dev/qvm/qnx-guest-1/guest_to_host bind=/dev/vdevpeers/vp0
+
+  ## For use with a guest with system name "qnx-guest-2"
+  #ifconfig vp1 create up
+  #vpctl vp1 peer=/dev/qvm/qnx-guest-2/guest_to_host bind=/dev/vdevpeers/vp1
+
+  ############################################################################################
+    ## Connecting Hypervisor Virtio Networking to External Networks
+    ##  - Connect vdevpeer interface(s) to a bridge that is also connected to the
+    ##    physical interface that has connectivity to the external network
+  ############################################################################################
+    #ifconfig bridge0 create up addm vp0 addm vp1
+
+  ## Add the appropriate physical network interface(s) to the bridge here
+  if_up -p cgem0
+  ifconfig cgem0 up
+
+  #ifconfig bridge0 addm cgem0
+  # Copy the host interface MAC address to the bridge
+  sysctl -w net.link.bridge.inherit_mac=1
+
+  # Create and bring up the bridge
+  # N.B. Host interface is first added so its MAC is the one copied
+  ifconfig bridge0 create up addm cgem0 addm vp0
+}
+
+################################################################################################
 ## Script for network
 ################################################################################################
-net_start.sh = {
+net_start_hypervisor.sh = {
 
 #!/bin/sh
 
@@ -805,10 +900,19 @@ gpio-rp1 set 32 op pd dh
 ## Network driver
 ############################################################################################
 echo "Starting networking ..."
-io-sock -m phy -m fdt -d cgem -m usb -d axe -d axge -d cdce -d smsc 
+io-sock -m phy -m fdt -m vdevpeer-net -d cgem -m usb -d axe -d axge -d cdce -d smsc
+
+############################################################################################
+## vdev net start
+############################################################################################
+/proc/boot/.vdev_net_start.sh
 
 echo "Starting DHCP client ..."
 dhcpcd -bqq
+
+# Configure offload settings
+ifconfig vp0 -txcsum -txcsum6 -tso6 -tso4
+ifconfig bridge0 -txcsum -txcsum6 -tso6 -tso4
 
 # Run wpa_supplicant with configuration file /etc/system/config/wpa_supplicant.conf
 # to connect to WiFi network
@@ -933,4 +1037,3 @@ dhd_verbose=0
 ################################################################################################
 ## none official or private utils for debugging purpose, should be removed from official build
 ################################################################################################
-

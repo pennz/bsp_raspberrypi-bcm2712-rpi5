@@ -11,7 +11,7 @@ endif
 include $(QCONFIG)
 unexport ROOT_DIR
 
-.PHONY: all install clean links make_links dummy images prebuilt binaries
+.PHONY: all install clean links make_links dummy images prebuilt binaries hypervisor
 
 # Expands to a single newline character
 define NEWLINE
@@ -23,6 +23,10 @@ SUFFIXES := .mk
 
 all: install links $(if $(wildcard images/*),images)
 	@echo done
+
+# Build hypervisor IFS image
+hypervisor: install links
+	$(MAKE) -Cimages hypervisor
 
 subdirs:=$(subst /Makefile,,$(wildcard */[Mm]akefile))
 
